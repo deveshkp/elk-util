@@ -1,0 +1,18 @@
+[project]
+name = "es_sync_ui"
+version = "0.1.0"
+description = "A simple UI app to show missing Elasticsearch indices"
+authors = [{name = "devpa", email = "deveshp26@gmail.com"}]
+dependencies = [
+    "reflex",          # the new name for pynecone
+    "elasticsearch",   # for backend Elasticsearch queries
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.reflex]
+# Optional: Configure the Reflex app
+app_name = "es_sync_ui"
+port = 3000

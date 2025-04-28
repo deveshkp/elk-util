@@ -1,0 +1,7 @@
+app.py
+pyproject.toml
+es_sync_ui.egg-info/PKG-INFO
+es_sync_ui.egg-info/SOURCES.txt
+es_sync_ui.egg-info/dependency_links.txt
+es_sync_ui.egg-info/requires.txt
+es_sync_ui.egg-info/top_level.txt

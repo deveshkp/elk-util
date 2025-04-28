@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: es_sync_ui
+Version: 0.1.0
+Summary: A simple UI app to show missing Elasticsearch indices
+Author-email: devpa <deveshp26@gmail.com>
+Requires-Dist: reflex
+Requires-Dist: elasticsearch
