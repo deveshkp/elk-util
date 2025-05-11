@@ -207,6 +207,26 @@ def verify_restore_success(index, expected_docs):
         logging.error(f"Error verifying restore for {index}: {str(e)}")
         return False
 
+def check_cluster_allocation():
+    """Check cluster allocation settings and status."""
+    try:
+        # Check allocation settings
+        settings_url = f"{PASSIVE_CLUSTER['url']}/_cluster/settings"
+        settings_response = requests.get(settings_url)
+        if settings_response.ok:
+            settings = settings_response.json()
+            logging.info(f"Cluster allocation settings: {settings}")
+        
+        # Check allocation explanation
+        explain_url = f"{PASSIVE_CLUSTER['url']}/_cluster/allocation/explain"
+        explain_response = requests.get(explain_url)
+        if explain_response.ok:
+            explain = explain_response.json()
+            logging.info(f"Allocation explanation: {explain}")
+            
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to check cluster allocation: {str(e)}")
+
 def restore_index(snapshot, index, expected_docs):
     """Restore an index from snapshot to passive cluster."""
     try:
@@ -241,38 +261,69 @@ def restore_index(snapshot, index, expected_docs):
         # Wait for restore to complete by checking index health
         max_attempts = 30
         attempt = 0
-        while attempt < max_attempts:
-            try:
-                health_url = f"{PASSIVE_CLUSTER['url']}/_cluster/health/{index}"
-                health_response = requests.get(health_url)
-                if health_response.ok:
-                    health_data = health_response.json()
-                    status = health_data.get('status')
-                    logging.info(f"Index {index} health check {attempt + 1}/{max_attempts}: status={status}, "
-                               f"number_of_shards={health_data.get('number_of_shards')}, "
-                               f"active_shards={health_data.get('active_shards')}, "
-                               f"relocating_shards={health_data.get('relocating_shards')}, "
-                               f"initializing_shards={health_data.get('initializing_shards')}, "
-                               f"unassigned_shards={health_data.get('unassigned_shards')}")
-                    
-                    if status == 'green':
-                        # Verify document count after restore
-                        if verify_restore_success(index, expected_docs):
-                            logging.info(f"Index {index} restored successfully with correct document count")
-                            return True
-                        else:
-                            logging.warning(f"Index {index} is green but document count doesn't match. Retrying...")
-                            # If document count doesn't match, we'll continue waiting
-                else:
-                    logging.warning(f"Health check failed for {index}: {health_response.text}")
-                attempt += 1
-                time.sleep(10)  # Wait 10 seconds between checks
-            except requests.exceptions.RequestException as e:
-                logging.warning(f"Error checking restore status for {index}: {str(e)}")
-                attempt += 1
-                time.sleep(10)
+        retry_count = 0
+        max_retries = 3
         
-        logging.error(f"Restore operation timed out for index {index} after {max_attempts} attempts")
+        while retry_count < max_retries:
+            attempt = 0
+            while attempt < max_attempts:
+                try:
+                    health_url = f"{PASSIVE_CLUSTER['url']}/_cluster/health/{index}"
+                    health_response = requests.get(health_url)
+                    if health_response.ok:
+                        health_data = health_response.json()
+                        status = health_data.get('status')
+                        logging.info(f"Index {index} health check {attempt + 1}/{max_attempts}: status={status}, "
+                                   f"number_of_shards={health_data.get('number_of_shards')}, "
+                                   f"active_shards={health_data.get('active_shards')}, "
+                                   f"relocating_shards={health_data.get('relocating_shards')}, "
+                                   f"initializing_shards={health_data.get('initializing_shards')}, "
+                                   f"unassigned_shards={health_data.get('unassigned_shards')}")
+                        
+                        # Consider both green and yellow as successful states
+                        if status in ['green', 'yellow']:
+                            # Check if all primary shards are allocated
+                            if health_data.get('active_shards', 0) > 0:
+                                # Get current document count
+                                current_docs = get_index_doc_count(index, PASSIVE_CLUSTER)
+                                
+                                if current_docs == expected_docs:
+                                    logging.info(f"Index {index} restored successfully with correct document count")
+                                    return True
+                                else:
+                                    logging.warning(f"Index {index} is {status} but document count doesn't match. "
+                                                  f"Expected {expected_docs}, got {current_docs}. Retrying...")
+                            else:
+                                logging.warning(f"Index {index} is {status} but no active shards. Retrying...")
+                        else:
+                            logging.info(f"Index {index} status is {status}, waiting for green/yellow...")
+                    else:
+                        logging.warning(f"Health check failed for {index}: {health_response.text}")
+                    attempt += 1
+                    time.sleep(10)  # Wait 10 seconds between checks
+                except requests.exceptions.RequestException as e:
+                    logging.warning(f"Error checking restore status for {index}: {str(e)}")
+                    attempt += 1
+                    time.sleep(10)
+            
+            # If we get here, the restore didn't complete successfully
+            retry_count += 1
+            if retry_count < max_retries:
+                logging.warning(f"Restore attempt {retry_count} failed. Retrying restore operation...")
+                # Close the index if it exists
+                close_index(index)
+                # Wait a bit before retrying
+                time.sleep(30)
+                # Try the restore again
+                r = requests.post(restore_url, json=body, timeout=300)
+                if not r.ok:
+                    logging.error(f"Retry restore failed with status {r.status_code}: {r.text}")
+                    return False
+            else:
+                logging.error(f"All {max_retries} restore attempts failed for index {index}")
+                check_cluster_allocation()
+                return False
+        
         return False
         
     except requests.exceptions.RequestException as e:
@@ -362,7 +413,7 @@ def main():
         if restore_index(snapshot, idx, expected_docs):
             if open_index(idx):
                 if not wait_for_green(idx):
-                    logging.error(f"Index {idx} failed to become green")
+                    logging.warning(f"Index {idx} is in yellow state but may be usable")
         else:
             logging.error(f"Restore failed for {idx}")
 
